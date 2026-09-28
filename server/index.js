@@ -74,6 +74,10 @@ http
         const body = req.method === "GET" ? {} : await readBody(req);
         return json(res, 200, await route(body, req));
       }
+      if (req.method === "GET" && req.url === "/vendor/gsap.min.js") {
+        res.writeHead(200, { "content-type": "text/javascript", "cache-control": "max-age=86400" });
+        return res.end(await readFile("node_modules/gsap/dist/gsap.min.js"));
+      }
       if (req.method === "GET" && (req.url === "/" || req.url === "/index.html")) {
         res.writeHead(200, { "content-type": "text/html" });
         return res.end(await readFile("public/index.html"));
