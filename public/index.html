@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Storyboard Studio</title>
+<style>
+  body{font-family:system-ui,sans-serif;background:#111;color:#eee;margin:0;padding:16px;max-width:900px;margin-inline:auto}
+  .scene{background:#1c1c1c;border-radius:8px;padding:12px;margin:12px 0}
+  textarea{width:100%;box-sizing:border-box;background:#111;color:#eee;border:1px solid #333;border-radius:6px;padding:8px}
+  button{background:#6c5ce7;color:#fff;border:0;border-radius:6px;padding:8px 14px;cursor:pointer}
+  img{max-width:100%;border-radius:6px;margin-top:8px}
+  .msg{color:#f7b731;font-size:14px}
+</style></head><body>
+<h1>Storyboard Studio</h1>
+<p id="status" class="msg"></p>
+<div id="scenes"></div>
+<button id="add">+ Add scene</button>
+<script>
+const scenes = document.getElementById("scenes");
+function addScene() {
+  const n = scenes.children.length + 1;
+  const d = document.createElement("div");
+  d.className = "scene";
+  d.innerHTML = `<b>Scene ${n}</b><textarea rows="3" placeholder="Describe the shot..."></textarea>
+    <button>Generate frame</button><p class="msg"></p><div class="out"></div>`;
+  const [ta, btn, msg, out] = [d.querySelector("textarea"), d.querySelector("button"), d.querySelector(".msg"), d.querySelector(".out")];
+  btn.onclick = async () => {
+    msg.textContent = "Generating...";
+    const r = await fetch("/api/scenes/image", {method:"POST", body: JSON.stringify({prompt: ta.value})});
+    const j = await r.json();
+    if (!r.ok) { msg.textContent = j.error; return; }
+    msg.textContent = "";
+    out.innerHTML = j.imageUrl ? `<img src="${j.imageUrl}">` : "";
+  };
+  scenes.appendChild(d);
+}
+document.getElementById("add").onclick = addScene;
+addScene();
+fetch("/api/status").then(r=>r.json()).then(s=>{
+  document.getElementById("status").textContent = s.pikaConfigured ? "" : "Pika key not configured on the server.";
+});
+</script></body></html>
