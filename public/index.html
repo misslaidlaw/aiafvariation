@@ -28,14 +28,50 @@
   .media img, .media video { max-width:100%; border-radius:8px; margin-top:8px; }
   .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:12px; }
   .empty { color:var(--muted); padding:24px 0; }
+  header { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; flex-wrap:wrap; }
+  .tools { display:flex; gap:6px; flex-wrap:wrap; }
+  .tools button { background:none; color:var(--text); border:1px solid var(--line); border-radius:8px; padding:6px 10px; cursor:pointer; font:inherit; font-size:13px; }
+  dialog { background:var(--panel); color:var(--text); border:1px solid var(--line); border-radius:12px; width:min(480px, calc(100vw - 32px)); padding:18px; }
+  dialog::backdrop { background:rgba(0,0,0,.6); }
+  dialog h2 { margin:0 0 4px; font-size:18px; }
+  dialog a { color:var(--accent); }
+  .check { display:flex; gap:8px; align-items:center; margin-top:12px; font-size:14px; color:var(--text); }
+  .check input { width:auto; }
+  .ok { color:#5fd08a; }
   label { font-size:13px; color:var(--muted); display:block; margin-top:8px; }
 </style>
 </head>
 <body>
 <header>
-  <h1>Storyboard Studio</h1>
-  <div id="status"></div>
+  <div>
+    <h1>Storyboard Studio</h1>
+    <div id="status"></div>
+  </div>
+  <div class="tools">
+    <button id="openKeys">🔑 API keys</button>
+    <button id="export">Export project</button>
+    <button id="import">Import project</button>
+    <button id="reset">New project</button>
+    <input id="importFile" type="file" accept="application/json" hidden>
+  </div>
 </header>
+<dialog id="keys">
+  <h2>Bring your own API keys</h2>
+  <p class="meta">Your keys are kept in this browser only. They are sent to this app's server with each
+    request so it can call the AI services for you, and are never saved there.</p>
+  <label for="anthropicKey">Anthropic key (writes the screenplay, prompts and sheets) –
+    <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">get one</a></label>
+  <input id="anthropicKey" type="password" autocomplete="off" placeholder="sk-ant-...">
+  <label for="pikaKey">Pika key (images and video) –
+    <a href="https://dev.pika.art/login" target="_blank" rel="noopener">get one</a></label>
+  <input id="pikaKey" type="password" autocomplete="off" placeholder="pk_...">
+  <label class="check"><input id="remember" type="checkbox"> Remember on this device</label>
+  <p class="meta">Unticked, the keys are forgotten when you close this tab. Only tick it on your own computer.</p>
+  <div class="row">
+    <button class="go" id="saveKeys">Save</button>
+    <button id="clearKeys" style="background:none;color:var(--muted);border:0;cursor:pointer;font:inherit">Forget keys</button>
+  </div>
+</dialog>
 <nav id="tabs"></nav>
 <main id="view"></main>
 
@@ -54,16 +90,30 @@ const el = (tag, props = {}, ...kids) => {
   for (const k of kids) if (k != null) n.append(k);
   return n;
 };
+// Browser storage can be unavailable (private mode, blocked site data): never let it break the app.
+const store = {
+  get(area, k) { try { return window[area].getItem(k); } catch { return null; } },
+  set(area, k, v) { try { window[area].setItem(k, v); return true; } catch { return false; } },
+  del(area, k) { try { window[area].removeItem(k); } catch {} },
+};
+const KEY_NAMES = ["anthropicKey", "pikaKey"];
+const getKey = (k) => store.get("sessionStorage", k) || store.get("localStorage", k) || "";
+let serverKeys = {};
+
 async function api(method, path, body) {
-  const r = await fetch(path, { method, headers: { "content-type": "application/json" }, body: body && JSON.stringify(body) });
+  const headers = { "content-type": "application/json" };
+  if (getKey("anthropicKey")) headers["x-anthropic-key"] = getKey("anthropicKey");
+  if (getKey("pikaKey")) headers["x-pika-key"] = getKey("pikaKey");
+  const r = await fetch(path, { method, headers, body: body && JSON.stringify(body) });
   const j = await r.json();
   if (!r.ok) throw new Error(j.error || r.statusText);
   return j;
 }
-let saveTimer;
+// Each person's project lives in their own browser, not on the server.
 function save() {
-  clearTimeout(saveTimer);
-  saveTimer = setTimeout(() => api("PUT", "/api/project", project).catch(() => {}), 400);
+  if (!store.set("localStorage", "project", JSON.stringify(project))) {
+    document.getElementById("status").textContent = "Couldn't autosave in this browser. Use Export project to keep your work.";
+  }
 }
 function editable(obj, key, opts = {}) {
   const t = el(opts.input ? "input" : "textarea", { value: obj[key] ?? "", className: opts.className || "" });
@@ -180,12 +230,60 @@ function render() {
   document.getElementById("view").replaceChildren(views[stage]());
 }
 
+function showKeyStatus() {
+  const missing = [
+    !getKey("anthropicKey") && !serverKeys.anthropic && "Anthropic (writing)",
+    !getKey("pikaKey") && !serverKeys.pika && "Pika (images & video)",
+  ].filter(Boolean);
+  const st = document.getElementById("status");
+  st.className = missing.length ? "" : "ok";
+  st.textContent = missing.length ? "Add your API keys to start: " + missing.join(", ") : "Keys ready";
+}
+
+// --- keys dialog
+const dlg = document.getElementById("keys");
+document.getElementById("openKeys").onclick = () => {
+  for (const k of KEY_NAMES) document.getElementById(k).value = getKey(k);
+  document.getElementById("remember").checked = Boolean(store.get("localStorage", "anthropicKey") || store.get("localStorage", "pikaKey"));
+  dlg.showModal();
+};
+document.getElementById("saveKeys").onclick = () => {
+  const remember = document.getElementById("remember").checked;
+  for (const k of KEY_NAMES) {
+    const v = document.getElementById(k).value.trim();
+    store.del("localStorage", k); store.del("sessionStorage", k);
+    if (v) store.set(remember ? "localStorage" : "sessionStorage", k, v);
+  }
+  dlg.close(); showKeyStatus();
+};
+document.getElementById("clearKeys").onclick = () => {
+  for (const k of KEY_NAMES) { store.del("localStorage", k); store.del("sessionStorage", k); document.getElementById(k).value = ""; }
+  dlg.close(); showKeyStatus();
+};
+
+// --- project file tools
+document.getElementById("export").onclick = () => {
+  const name = (project.screenplay?.title || "storyboard").replace(/[^a-z0-9]+/gi, "-").toLowerCase();
+  const a = el("a", { href: URL.createObjectURL(new Blob([JSON.stringify(project, null, 2)], { type: "application/json" })), download: name + ".json" });
+  a.click(); URL.revokeObjectURL(a.href);
+};
+const fileInput = document.getElementById("importFile");
+document.getElementById("import").onclick = () => fileInput.click();
+fileInput.onchange = async () => {
+  try { project = JSON.parse(await fileInput.files[0].text()); save(); stage = "idea"; render(); }
+  catch { alert("That file isn't a Storyboard Studio project."); }
+  fileInput.value = "";
+};
+document.getElementById("reset").onclick = () => {
+  if (confirm("Start a new project? Export first if you want to keep this one.")) { project = {}; save(); stage = "idea"; render(); }
+};
+
 (async () => {
-  project = await api("GET", "/api/project").catch(() => ({}));
+  try { project = JSON.parse(store.get("localStorage", "project") || "{}"); } catch { project = {}; }
   render();
-  const s = await api("GET", "/api/status").catch(() => ({}));
-  const missing = [!s.writer && "ANTHROPIC_API_KEY (writing steps)", !s.pika && "PIKA_API_KEY (images & video)"].filter(Boolean);
-  document.getElementById("status").textContent = missing.length ? "Not configured on the server: " + missing.join(", ") : "";
+  serverKeys = (await api("GET", "/api/status").catch(() => ({}))).serverKeys || {};
+  showKeyStatus();
+  if (!getKey("anthropicKey") && !serverKeys.anthropic) dlg.showModal();
 })();
 </script>
 </body>
