@@ -24,9 +24,16 @@ A filmmaking app that walks one idea through the whole pipeline:
    npm start
    ```
 4. Open http://localhost:3000 in your browser.
-5. Click **🔑 API keys**, paste your Anthropic and Pika keys, and press Save.
+5. Click **🔑 API keys**, paste your Pika key (and an Anthropic key if you have one), and press Save.
 
 To stop the app, press `Ctrl+C` in the terminal. Next time, just run `npm start` again.
+
+## No Anthropic key? Paste from Claude
+
+The writing steps (screenplay, prompts & sheets) can use your normal Claude account instead
+of an API key. On the Idea and Screenplay steps, open **"No Anthropic key? Paste from Claude
+instead"**, copy the prompt into a Claude chat, and paste Claude's reply back. Only the
+Pika key is then needed, for images and video.
 
 ## Bring your own keys
 

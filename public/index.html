@@ -38,6 +38,8 @@
   .check { display:flex; gap:8px; align-items:center; margin-top:12px; font-size:14px; color:var(--text); }
   .check input { width:auto; }
   .ok { color:#5fd08a; }
+  details.card summary { cursor:pointer; font-weight:600; }
+  details.card[open] summary { margin-bottom:8px; }
   label { font-size:13px; color:var(--muted); display:block; margin-top:8px; }
 </style>
 </head>
@@ -59,7 +61,8 @@
   <h2>Bring your own API keys</h2>
   <p class="meta">Your keys are kept in this browser only. They are sent to this app's server with each
     request so it can call the AI services for you, and are never saved there.</p>
-  <label for="anthropicKey">Anthropic key (writes the screenplay, prompts and sheets) –
+  <label for="anthropicKey">Anthropic key – optional: writes the screenplay, prompts and sheets in one click.
+    Without it, use “Paste from Claude” with your normal Claude account –
     <a href="https://console.anthropic.com/settings/keys" target="_blank" rel="noopener">get one</a></label>
   <input id="anthropicKey" type="password" autocomplete="off" placeholder="sk-ant-...">
   <label for="pikaKey">Pika key (images and video) –
@@ -144,6 +147,90 @@ const imageButton = (item) => action(item.imageUrl ? "Regenerate image" : "Gener
 });
 const needs = (what) => el("p", { className: "empty", textContent: `Finish "${what}" first.` });
 
+// --- "Paste from Claude": do the writing steps in a Claude chat, no API key needed.
+const SCREENPLAY_SHAPE = `{
+  "title": "string",
+  "logline": "string",
+  "scenes": [
+    { "number": 1, "heading": "INT. DINER - NIGHT", "summary": "one line", "text": "full scene in screenplay format: action and dialogue" }
+  ]
+}`;
+const BREAKDOWN_SHAPE = `{
+  "styleGuide": "one paragraph visual style shared by every image and video prompt",
+  "characters": [ { "name": "", "role": "", "appearance": "", "wardrobe": "", "personality": "", "imagePrompt": "character sheet: full body, neutral background" } ],
+  "locations": [ { "name": "", "description": "", "mood": "", "lighting": "", "imagePrompt": "establishing shot, no characters" } ],
+  "props": [ { "name": "", "description": "", "significance": "", "imagePrompt": "product-style shot on a neutral background" } ],
+  "shots": [ { "sceneNumber": 1, "shotType": "wide / medium / close-up", "description": "", "imagePrompt": "keyframe prompt", "videoPrompt": "camera move and action over ~5 seconds" } ]
+}`;
+const FORMAT_RULE = "Reply with ONLY valid JSON in exactly this shape (no commentary, no markdown):";
+
+const screenplayPrompt = () => `You are a professional screenwriter. Write tight, visual short-film screenplays that can be produced with AI image and video generation: few locations, a small cast, strong visual moments.
+
+Idea: ${project.idea.text}
+
+Write a short film screenplay with about ${project.idea.scenes} scenes.
+
+${FORMAT_RULE}
+${SCREENPLAY_SHAPE}`;
+
+const breakdownPrompt = () => `You are a film pre-production designer. Break this screenplay into consistent visual reference sheets and shot prompts for AI image and video models. Describe each character, location and prop once in precise visual detail, then reuse those exact descriptions word for word inside every shot prompt so the generated images stay consistent. Create 1-3 shots per scene.
+
+Screenplay:
+${JSON.stringify(project.screenplay)}
+
+${FORMAT_RULE}
+${BREAKDOWN_SHAPE}`;
+
+// Accepts Claude's reply even if it's wrapped in ```json fences or has text around it.
+function parseReply(text) {
+  const start = text.indexOf("{"), end = text.lastIndexOf("}");
+  if (start < 0 || end < start) throw new Error("Couldn't find JSON in that reply. Paste Claude's whole answer.");
+  try { return JSON.parse(text.slice(start, end + 1)); }
+  catch { throw new Error("That reply isn't complete JSON. Ask Claude to “reply with only the JSON” and paste again."); }
+}
+const str = (v) => (typeof v === "string" ? v : v == null ? "" : String(v));
+function cleanScreenplay(j) {
+  if (!Array.isArray(j.scenes) || !j.scenes.length) throw new Error("No scenes found in that reply.");
+  return {
+    title: str(j.title), logline: str(j.logline),
+    scenes: j.scenes.map((s, i) => ({ number: Number(s.number) || i + 1, heading: str(s.heading), summary: str(s.summary), text: str(s.text) })),
+  };
+}
+function cleanBreakdown(j) {
+  if (!Array.isArray(j.shots) || !j.shots.length) throw new Error("No shots found in that reply.");
+  const list = (a, keys) => (Array.isArray(a) ? a : []).map((x) => Object.fromEntries(keys.map((k) => [k, str(x?.[k])])));
+  return {
+    styleGuide: str(j.styleGuide),
+    characters: list(j.characters, ["name", "role", "appearance", "wardrobe", "personality", "imagePrompt"]),
+    locations: list(j.locations, ["name", "description", "mood", "lighting", "imagePrompt"]),
+    props: list(j.props, ["name", "description", "significance", "imagePrompt"]),
+    shots: j.shots.map((x) => ({ ...Object.fromEntries(["shotType", "description", "imagePrompt", "videoPrompt"].map((k) => [k, str(x?.[k])])), sceneNumber: Number(x?.sceneNumber) || 1 })),
+  };
+}
+
+function pastePanel({ buildPrompt, ready, onUse }) {
+  const box = el("details", { className: "card" });
+  box.append(el("summary", { textContent: "No Anthropic key? Paste from Claude instead" }));
+  const promptBox = el("textarea", { readOnly: true, rows: 6 });
+  const reply = el("textarea", { rows: 6, placeholder: "Paste Claude's reply here" });
+  const copyMsg = el("span", { className: "msg" });
+  const copyBtn = el("button", { className: "go", textContent: "1. Copy prompt" });
+  copyBtn.onclick = async () => {
+    const err = ready(); if (err) { copyMsg.textContent = err; return; }
+    promptBox.value = buildPrompt();
+    try { await navigator.clipboard.writeText(promptBox.value); copyMsg.textContent = "Copied. Paste it into a Claude chat."; }
+    catch { promptBox.select(); copyMsg.textContent = "Select the text above and copy it."; }
+  };
+  box.addEventListener("toggle", () => { if (box.open && !ready()) promptBox.value = buildPrompt(); });
+  box.append(
+    el("p", { className: "meta", textContent: "Open claude.ai (or the Claude app), paste the prompt, then copy Claude's whole reply back here." }),
+    el("div", { className: "row" }, copyBtn, copyMsg),
+    promptBox,
+    el("label", { textContent: "2. Claude's reply" }), reply,
+    action("3. Use this reply →", async () => onUse(parseReply(reply.value))));
+  return box;
+}
+
 // --- stages --------------------------------------------------------------
 const views = {
   idea() {
@@ -160,7 +247,12 @@ const views = {
           if (!project.idea.text.trim()) throw new Error("Describe your idea first.");
           project.screenplay = await api("POST", "/api/screenplay", { idea: project.idea.text, scenes: project.idea.scenes });
           delete project.breakdown; save(); stage = "screenplay";
-        })));
+        })),
+      pastePanel({
+        ready: () => (project.idea.text.trim() ? "" : "Describe your idea first."),
+        buildPrompt: screenplayPrompt,
+        onUse: (j) => { project.screenplay = cleanScreenplay(j); delete project.breakdown; save(); stage = "screenplay"; },
+      }));
   },
   screenplay() {
     const sp = project.screenplay;
@@ -178,7 +270,12 @@ const views = {
         action("Create prompts & sheets →", async () => {
           project.breakdown = await api("POST", "/api/breakdown", { screenplay: sp });
           save(); stage = "prompts";
-        })));
+        })),
+      pastePanel({
+        ready: () => "",
+        buildPrompt: breakdownPrompt,
+        onUse: (j) => { project.breakdown = cleanBreakdown(j); save(); stage = "prompts"; },
+      }));
   },
   prompts() {
     const b = project.breakdown;
@@ -231,13 +328,14 @@ function render() {
 }
 
 function showKeyStatus() {
-  const missing = [
-    !getKey("anthropicKey") && !serverKeys.anthropic && "Anthropic (writing)",
-    !getKey("pikaKey") && !serverKeys.pika && "Pika (images & video)",
-  ].filter(Boolean);
+  const writer = getKey("anthropicKey") || serverKeys.anthropic;
+  const pika = getKey("pikaKey") || serverKeys.pika;
   const st = document.getElementById("status");
-  st.className = missing.length ? "" : "ok";
-  st.textContent = missing.length ? "Add your API keys to start: " + missing.join(", ") : "Keys ready";
+  st.className = pika ? "ok" : "";
+  st.textContent = [
+    writer ? "Writing: Anthropic key ready" : "Writing: paste from Claude (or add an Anthropic key)",
+    pika ? "Images & video: Pika key ready" : "Images & video: add your Pika key",
+  ].join(" · ");
 }
 
 // --- keys dialog
@@ -283,7 +381,7 @@ document.getElementById("reset").onclick = () => {
   render();
   serverKeys = (await api("GET", "/api/status").catch(() => ({}))).serverKeys || {};
   showKeyStatus();
-  if (!getKey("anthropicKey") && !serverKeys.anthropic) dlg.showModal();
+  if (!getKey("pikaKey") && !serverKeys.pika && !getKey("anthropicKey")) dlg.showModal();
 })();
 </script>
 </body>
