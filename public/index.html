@@ -1,41 +1,192 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8">
+<html lang="en">
+<head>
+<meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>Storyboard Studio</title>
 <style>
-  body{font-family:system-ui,sans-serif;background:#111;color:#eee;margin:0;padding:16px;max-width:900px;margin-inline:auto}
-  .scene{background:#1c1c1c;border-radius:8px;padding:12px;margin:12px 0}
-  textarea{width:100%;box-sizing:border-box;background:#111;color:#eee;border:1px solid #333;border-radius:6px;padding:8px}
-  button{background:#6c5ce7;color:#fff;border:0;border-radius:6px;padding:8px 14px;cursor:pointer}
-  img{max-width:100%;border-radius:6px;margin-top:8px}
-  .msg{color:#f7b731;font-size:14px}
-</style></head><body>
-<h1>Storyboard Studio</h1>
-<p id="status" class="msg"></p>
-<div id="scenes"></div>
-<button id="add">+ Add scene</button>
+  :root { --bg:#0f0f12; --panel:#1a1a20; --line:#2c2c35; --text:#ececf1; --muted:#9a9aa8; --accent:#7c6cf0; --warn:#f2b441; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:15px/1.5 system-ui,sans-serif; }
+  header { padding:16px; border-bottom:1px solid var(--line); }
+  h1 { margin:0; font-size:20px; }
+  #status { color:var(--warn); font-size:13px; margin-top:4px; }
+  nav { display:flex; gap:4px; overflow-x:auto; padding:12px 16px; border-bottom:1px solid var(--line); }
+  nav button { background:none; color:var(--muted); border:1px solid var(--line); border-radius:999px; padding:6px 12px; white-space:nowrap; cursor:pointer; }
+  nav button.on { background:var(--accent); color:#fff; border-color:var(--accent); }
+  main { max-width:960px; margin:0 auto; padding:16px; }
+  .card { background:var(--panel); border:1px solid var(--line); border-radius:10px; padding:14px; margin:12px 0; }
+  .card h3 { margin:0 0 6px; font-size:16px; }
+  .meta { color:var(--muted); font-size:13px; }
+  textarea, input, select { width:100%; background:var(--bg); color:var(--text); border:1px solid var(--line); border-radius:8px; padding:8px; font:inherit; }
+  textarea { min-height:90px; resize:vertical; }
+  .scene-text { font-family:"Courier New",monospace; min-height:200px; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-top:8px; }
+  button.go { background:var(--accent); color:#fff; border:0; border-radius:8px; padding:8px 14px; cursor:pointer; }
+  button.go:disabled { opacity:.5; cursor:default; }
+  .msg { font-size:13px; color:var(--warn); }
+  .media img, .media video { max-width:100%; border-radius:8px; margin-top:8px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(260px,1fr)); gap:12px; }
+  .empty { color:var(--muted); padding:24px 0; }
+  label { font-size:13px; color:var(--muted); display:block; margin-top:8px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>Storyboard Studio</h1>
+  <div id="status"></div>
+</header>
+<nav id="tabs"></nav>
+<main id="view"></main>
+
 <script>
-const scenes = document.getElementById("scenes");
-function addScene() {
-  const n = scenes.children.length + 1;
-  const d = document.createElement("div");
-  d.className = "scene";
-  d.innerHTML = `<b>Scene ${n}</b><textarea rows="3" placeholder="Describe the shot..."></textarea>
-    <button>Generate frame</button><p class="msg"></p><div class="out"></div>`;
-  const [ta, btn, msg, out] = [d.querySelector("textarea"), d.querySelector("button"), d.querySelector(".msg"), d.querySelector(".out")];
-  btn.onclick = async () => {
-    msg.textContent = "Generating...";
-    const r = await fetch("/api/scenes/image", {method:"POST", body: JSON.stringify({prompt: ta.value})});
-    const j = await r.json();
-    if (!r.ok) { msg.textContent = j.error; return; }
-    msg.textContent = "";
-    out.innerHTML = j.imageUrl ? `<img src="${j.imageUrl}">` : "";
-  };
-  scenes.appendChild(d);
+const STAGES = [
+  ["idea", "1. Idea"], ["screenplay", "2. Screenplay"], ["prompts", "3. Shot prompts"],
+  ["characters", "4. Characters"], ["locations", "5. Locations"], ["props", "6. Props"],
+  ["video", "7. Video"],
+];
+let project = {};
+let stage = "idea";
+
+// --- helpers -------------------------------------------------------------
+const el = (tag, props = {}, ...kids) => {
+  const n = Object.assign(document.createElement(tag), props);
+  for (const k of kids) if (k != null) n.append(k);
+  return n;
+};
+async function api(method, path, body) {
+  const r = await fetch(path, { method, headers: { "content-type": "application/json" }, body: body && JSON.stringify(body) });
+  const j = await r.json();
+  if (!r.ok) throw new Error(j.error || r.statusText);
+  return j;
 }
-document.getElementById("add").onclick = addScene;
-addScene();
-fetch("/api/status").then(r=>r.json()).then(s=>{
-  document.getElementById("status").textContent = s.pikaConfigured ? "" : "Pika key not configured on the server.";
+let saveTimer;
+function save() {
+  clearTimeout(saveTimer);
+  saveTimer = setTimeout(() => api("PUT", "/api/project", project).catch(() => {}), 400);
+}
+function editable(obj, key, opts = {}) {
+  const t = el(opts.input ? "input" : "textarea", { value: obj[key] ?? "", className: opts.className || "" });
+  t.oninput = () => { obj[key] = t.value; save(); };
+  return t;
+}
+// Runs a slow action with button + message feedback.
+function action(label, fn) {
+  const msg = el("span", { className: "msg" });
+  const btn = el("button", { className: "go", textContent: label });
+  btn.onclick = async () => {
+    btn.disabled = true; msg.textContent = "Working…";
+    try { await fn(); msg.textContent = ""; render(); }
+    catch (e) { msg.textContent = e.message; }
+    finally { btn.disabled = false; }
+  };
+  return el("div", { className: "row" }, btn, msg);
+}
+function mediaFor(item) {
+  const box = el("div", { className: "media" });
+  if (item.imageUrl) box.append(el("img", { src: item.imageUrl, alt: item.name || item.description || "" }));
+  if (item.videoUrl) box.append(el("video", { src: item.videoUrl, controls: true }));
+  return box;
+}
+const imageButton = (item) => action(item.imageUrl ? "Regenerate image" : "Generate image", async () => {
+  const { imageUrl } = await api("POST", "/api/image", { prompt: [project.breakdown?.styleGuide, item.imagePrompt].filter(Boolean).join("\n\n") });
+  item.imageUrl = imageUrl; save();
 });
-</script></body></html>
+const needs = (what) => el("p", { className: "empty", textContent: `Finish "${what}" first.` });
+
+// --- stages --------------------------------------------------------------
+const views = {
+  idea() {
+    project.idea ??= { text: "", scenes: 5 };
+    const scenes = el("input", { type: "number", min: 1, max: 15, value: project.idea.scenes });
+    scenes.oninput = () => { project.idea.scenes = Number(scenes.value); save(); };
+    return el("div", {},
+      el("div", { className: "card" },
+        el("h3", { textContent: "What's your film about?" }),
+        el("p", { className: "meta", textContent: "A sentence or a paragraph: characters, setting, the twist, the feeling." }),
+        editable(project.idea, "text"),
+        el("label", { textContent: "Number of scenes" }), scenes,
+        action("Write screenplay →", async () => {
+          if (!project.idea.text.trim()) throw new Error("Describe your idea first.");
+          project.screenplay = await api("POST", "/api/screenplay", { idea: project.idea.text, scenes: project.idea.scenes });
+          delete project.breakdown; save(); stage = "screenplay";
+        })));
+  },
+  screenplay() {
+    const sp = project.screenplay;
+    if (!sp) return needs("Idea");
+    return el("div", {},
+      el("div", { className: "card" },
+        el("label", { textContent: "Title" }), editable(sp, "title", { input: true }),
+        el("label", { textContent: "Logline" }), editable(sp, "logline")),
+      ...sp.scenes.map((s) => el("div", { className: "card" },
+        el("h3", { textContent: `Scene ${s.number}: ${s.heading}` }),
+        el("p", { className: "meta", textContent: s.summary }),
+        editable(s, "text", { className: "scene-text" }))),
+      el("div", { className: "card" },
+        el("p", { className: "meta", textContent: "Edit anything above, then break it down into shots and reference sheets." }),
+        action("Create prompts & sheets →", async () => {
+          project.breakdown = await api("POST", "/api/breakdown", { screenplay: sp });
+          save(); stage = "prompts";
+        })));
+  },
+  prompts() {
+    const b = project.breakdown;
+    if (!b) return needs("Screenplay");
+    return el("div", {},
+      el("div", { className: "card" }, el("h3", { textContent: "Visual style (applied to every image)" }), editable(b, "styleGuide")),
+      ...b.shots.map((s, i) => el("div", { className: "card" },
+        el("h3", { textContent: `Shot ${i + 1} · Scene ${s.sceneNumber} · ${s.shotType}` }),
+        el("p", { className: "meta", textContent: s.description }),
+        el("label", { textContent: "Image prompt (keyframe)" }), editable(s, "imagePrompt"),
+        imageButton(s), mediaFor({ imageUrl: s.imageUrl }))));
+  },
+  characters: () => sheet("characters", ["role", "appearance", "wardrobe", "personality"]),
+  locations: () => sheet("locations", ["description", "mood", "lighting"]),
+  props: () => sheet("props", ["description", "significance"]),
+  video() {
+    const b = project.breakdown;
+    if (!b) return needs("Screenplay");
+    return el("div", {},
+      el("p", { className: "meta", textContent: "Each shot animates its keyframe image from step 3 when there is one." }),
+      ...b.shots.map((s, i) => el("div", { className: "card" },
+        el("h3", { textContent: `Shot ${i + 1} · Scene ${s.sceneNumber}` }),
+        el("label", { textContent: "Motion prompt" }), editable(s, "videoPrompt"),
+        action(s.videoUrl ? "Regenerate video" : "Generate video", async () => {
+          const { videoUrl } = await api("POST", "/api/video", { prompt: s.videoPrompt, imageUrl: s.imageUrl });
+          s.videoUrl = videoUrl; save();
+        }),
+        mediaFor({ imageUrl: s.videoUrl ? null : s.imageUrl, videoUrl: s.videoUrl }))));
+  },
+};
+
+function sheet(kind, fields) {
+  const b = project.breakdown;
+  if (!b) return needs("Screenplay");
+  return el("div", { className: "grid" }, ...b[kind].map((item) => el("div", { className: "card" },
+    el("h3", { textContent: item.name }),
+    ...fields.flatMap((f) => [el("label", { textContent: f }), editable(item, f)]),
+    el("label", { textContent: "Image prompt" }), editable(item, "imagePrompt"),
+    imageButton(item), mediaFor({ imageUrl: item.imageUrl, name: item.name }))));
+}
+
+function render() {
+  const tabs = document.getElementById("tabs");
+  tabs.replaceChildren(...STAGES.map(([id, label]) => {
+    const b = el("button", { textContent: label, className: id === stage ? "on" : "" });
+    b.onclick = () => { stage = id; render(); };
+    return b;
+  }));
+  document.getElementById("view").replaceChildren(views[stage]());
+}
+
+(async () => {
+  project = await api("GET", "/api/project").catch(() => ({}));
+  render();
+  const s = await api("GET", "/api/status").catch(() => ({}));
+  const missing = [!s.writer && "ANTHROPIC_API_KEY (writing steps)", !s.pika && "PIKA_API_KEY (images & video)"].filter(Boolean);
+  document.getElementById("status").textContent = missing.length ? "Not configured on the server: " + missing.join(", ") : "";
+})();
+</script>
+</body>
+</html>

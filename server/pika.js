@@ -6,11 +6,19 @@ export function pikaConfigured() {
   return Boolean(process.env.PIKA_API_KEY);
 }
 
+function notReady() {
+  if (!pikaConfigured()) throw new Error("PIKA_API_KEY is not set on the server.");
+  throw new Error("Pika connection not implemented yet: the Pika spec has not been read.");
+}
+
+// Returns { imageUrl }
 export async function generateImage({ prompt }) {
-  if (!pikaConfigured()) {
-    throw new Error("PIKA_API_KEY is not set on the server.");
-  }
-  // TODO: implement from the Pika image spec (model, endpoint, request body,
-  // polling/response format) once dev.pika.art is readable.
-  throw new Error("Pika image call not implemented yet: spec not read.");
+  // TODO: implement from the Pika image spec.
+  notReady();
+}
+
+// Returns { videoUrl }. imageUrl (optional) is a keyframe to animate.
+export async function generateVideo({ prompt, imageUrl }) {
+  // TODO: implement from the Pika video spec.
+  notReady();
 }
